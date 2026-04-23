@@ -4,8 +4,8 @@
   "private": true,
   "scripts": {
     "clean": "rm -rf .next",
-    "dev": "next dev --turbo --hostname 0.0.0.0",
-    "dev:webpack": "next dev --hostname 0.0.0.0",
+    "dev": "next dev --hostname 0.0.0.0",
+    "dev:turbo": "next dev --turbo --hostname 0.0.0.0",
     "build": "next build",
     "start": "next start",
     "lint": "next lint"

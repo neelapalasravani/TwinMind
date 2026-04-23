@@ -6,6 +6,7 @@ import { fillDetailPrompt } from "@/lib/detail-prompt";
 import { tailText } from "@/lib/groq-config";
 import { readApiJson, tryParseJson } from "@/lib/read-api-json";
 import { accumulateSseContent } from "@/lib/read-sse-chat";
+import { formatChatForPlainDisplay } from "@/lib/chat-display-plain";
 import { loadSettings } from "@/lib/settings-storage";
 import type {
   ChatMessage,
@@ -24,9 +25,6 @@ function transcriptForExport(chunks: TranscriptChunk[]): string {
 
 /** Groq rejects tiny or incomplete WebM blobs (common on MediaRecorder flush). */
 const MIN_TRANSCRIBE_BYTES = 3 * 1024;
-
-/** Min time between auto suggestion runs (after each audio chunk). Manual Refresh is always allowed. */
-const AUTO_SUGGESTIONS_MIN_INTERVAL_MS = 90_000;
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -68,8 +66,8 @@ export function MeetingWorkspace() {
   const transcribeChainRef = useRef<Promise<void>>(Promise.resolve());
   /** One suggestions request at a time — avoids out-of-order batches when manual + auto overlap. */
   const suggestionsChainRef = useRef<Promise<void>>(Promise.resolve());
-  /** Last successful suggestions fetch (manual or auto); used to throttle auto-only runs. */
-  const lastSuggestionsSuccessMsRef = useRef(0);
+  /** Bumped on each Start mic so late transcriptions from a prior session cannot append. */
+  const recordingSessionIdRef = useRef(0);
   /** True while the user wants recording (stays true across 30s segment restarts). */
   const recordingIntentRef = useRef(false);
   const segmentIntervalRef = useRef<number | null>(null);
@@ -152,7 +150,7 @@ export function MeetingWorkspace() {
   }, [recording]);
 
   const refreshSuggestions = useCallback(
-    async (opts?: { warnIfEmpty?: boolean; auto?: boolean }) => {
+    async (opts?: { warnIfEmpty?: boolean }) => {
       const run = async () => {
         const settings = loadSettings();
         if (!settings.groqApiKey.trim()) {
@@ -169,16 +167,6 @@ export function MeetingWorkspace() {
             );
           }
           return;
-        }
-
-        if (opts?.auto) {
-          const prev = lastSuggestionsSuccessMsRef.current;
-          if (
-            prev > 0 &&
-            Date.now() - prev < AUTO_SUGGESTIONS_MIN_INTERVAL_MS
-          ) {
-            return;
-          }
         }
 
         setBusySuggesting(true);
@@ -220,7 +208,6 @@ export function MeetingWorkspace() {
                 new Date(b.at).getTime() - new Date(a.at).getTime(),
             );
           });
-          lastSuggestionsSuccessMsRef.current = Date.now();
         } catch (e) {
           setError(e instanceof Error ? e.message : "Suggestions error.");
         } finally {
@@ -236,8 +223,9 @@ export function MeetingWorkspace() {
   );
 
   const transcribeBlob = useCallback(
-    async (blob: Blob) => {
+    async (blob: Blob, sessionId: number) => {
       if (blob.size < MIN_TRANSCRIBE_BYTES) return;
+      if (sessionId !== recordingSessionIdRef.current) return;
 
       const settings = loadSettings();
       if (!settings.groqApiKey.trim()) return;
@@ -282,15 +270,19 @@ export function MeetingWorkspace() {
 
         if (!text) return;
 
+        if (sessionId !== recordingSessionIdRef.current) return;
+
         const piece: TranscriptChunk = {
           id: crypto.randomUUID(),
           at: new Date().toISOString(),
           text,
         };
+        if (sessionId !== recordingSessionIdRef.current) return;
         const nextChunks = [...chunksRef.current, piece];
         chunksRef.current = nextChunks;
         setChunks(nextChunks);
-        await refreshSuggestions({ auto: true });
+        if (sessionId !== recordingSessionIdRef.current) return;
+        await refreshSuggestions();
       } catch (e) {
         setError(e instanceof Error ? e.message : "Transcription error.");
       } finally {
@@ -310,6 +302,13 @@ export function MeetingWorkspace() {
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+      recordingSessionIdRef.current += 1;
+      const sessionId = recordingSessionIdRef.current;
+      chunksRef.current = [];
+      setChunks([]);
+      setBatches([]);
+
       streamRef.current = stream;
       recordingIntentRef.current = true;
       transcribeChainRef.current = Promise.resolve();
@@ -321,7 +320,7 @@ export function MeetingWorkspace() {
         chunkWindowStartRef.current = Date.now();
         if (blob.size < MIN_TRANSCRIBE_BYTES) return;
         transcribeChainRef.current = transcribeChainRef.current
-          .then(() => transcribeBlob(blob))
+          .then(() => transcribeBlob(blob, sessionId))
           .catch((e) => {
             setError(e instanceof Error ? e.message : "Chunk error.");
           });
@@ -379,7 +378,7 @@ export function MeetingWorkspace() {
           setError(
             e instanceof Error
               ? e.message
-              : "Could not start a new audio segment.",
+              : "Could not start a new audio chunk.",
           );
         }
       };
@@ -626,12 +625,15 @@ export function MeetingWorkspace() {
               )}
             </div>
           </div>
+          <p className="shrink-0 border-b border-zinc-800 px-4 py-2 text-[11px] leading-relaxed text-zinc-500">
+            The transcript scrolls and appends new chunks every ~30 seconds
+            while recording. Use the mic button to start/stop. Include an
+            export button (not shown) so we can pull the full session.
+          </p>
           <div className="min-h-0 flex-1 overflow-y-auto p-4 text-sm leading-relaxed">
             {chunks.length === 0 ? (
-              <p className="text-zinc-500">
-                Start the mic. Audio is captured in ~30s segments (each
-                segment is a full file for more reliable transcription) and
-                appended here.
+              <p className="text-sm text-zinc-500">
+                No transcript yet — start the mic.
               </p>
             ) : (
               <ul className="space-y-3">
@@ -665,25 +667,29 @@ export function MeetingWorkspace() {
             </button>
           </div>
           <p className="shrink-0 border-b border-zinc-800 px-4 py-2 text-[11px] leading-relaxed text-zinc-500">
-            Each batch is three cards. If you do not like them, click Refresh
-            to generate another three from the same transcript (new batch on
-            top; older batches stay below).
+            On reload (or auto every ~30s), generate 3 fresh suggestions from
+            recent transcript context. New batch appears at the top; older batches
+            push down (faded). Each is a tappable card: a question to ask, a
+            talking point, an answer, or a fact-check. The preview alone should
+            already be useful.
           </p>
           <div className="min-h-0 flex-1 overflow-y-auto p-4">
             {batches.length === 0 ? (
               <p className="text-sm text-zinc-500">
-                While recording, suggestions auto-refresh after new transcript
-                arrives, at most once every{" "}
-                {AUTO_SUGGESTIONS_MIN_INTERVAL_MS / 1000} seconds so batches do
-                not repeat every audio chunk. You can always use Refresh for
-                another three cards. New batches appear on top.
+                Suggestions appear here once recording starts.
               </p>
             ) : (
               <ul className="space-y-5">
-                {batches.map((batch) => (
+                {batches.map((batch, idx) => (
                   <li
                     key={batch.id}
-                    className="rounded-xl border border-zinc-800 bg-zinc-950/40 p-3"
+                    className={`rounded-xl border border-zinc-800 bg-zinc-950/40 p-3 transition-opacity ${
+                      idx === 0
+                        ? "opacity-100"
+                        : idx === 1
+                          ? "opacity-[0.82]"
+                          : "opacity-[0.62]"
+                    }`}
                   >
                     <p className="mb-3 font-mono text-[10px] font-medium text-zinc-400">
                       Batch · {new Date(batch.at).toLocaleString()}
@@ -725,25 +731,40 @@ export function MeetingWorkspace() {
               Chat
             </h2>
           </div>
+          <p className="shrink-0 border-b border-zinc-800 px-4 py-2 text-[11px] leading-relaxed text-zinc-500">
+            Clicking a suggestion adds it to this chat and streams a detailed
+            answer (separate prompt, more context). User can also type questions
+            directly. One continuous chat per session — no login, no persistence.
+          </p>
           <div className="min-h-0 flex-1 overflow-y-auto p-4">
-            <ul className="space-y-3">
-              {chatMessages.map((m) => (
-                <li
-                  key={m.id}
-                  className={
-                    m.role === "user"
-                      ? "rounded-lg bg-zinc-900/60 p-3 text-sm text-zinc-200"
-                      : "rounded-lg border border-zinc-800 p-3 text-sm text-zinc-300"
-                  }
-                >
-                  <span className="font-mono text-[10px] text-zinc-500">
-                    {m.role} · {new Date(m.at).toLocaleTimeString()}
-                  </span>
-                  <p className="mt-1 whitespace-pre-wrap">{m.content}</p>
-                </li>
-              ))}
-              <div ref={chatEndRef} />
-            </ul>
+            {chatMessages.length === 0 ? (
+              <p className="text-sm text-zinc-500">
+                Click a suggestion or type a question below.
+              </p>
+            ) : (
+              <ul className="space-y-3">
+                {chatMessages.map((m) => (
+                  <li
+                    key={m.id}
+                    className={
+                      m.role === "user"
+                        ? "rounded-lg bg-zinc-900/60 p-3 text-sm text-zinc-200"
+                        : "rounded-lg border border-zinc-800 p-3 text-sm text-zinc-300"
+                    }
+                  >
+                    <span className="font-mono text-[10px] text-zinc-500">
+                      {m.role} · {new Date(m.at).toLocaleTimeString()}
+                    </span>
+                    <p className="mt-1 whitespace-pre-wrap">
+                      {m.role === "assistant"
+                        ? formatChatForPlainDisplay(m.content)
+                        : m.content}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <div ref={chatEndRef} />
           </div>
           <div className="shrink-0 border-t border-zinc-800 p-3">
             <div className="flex gap-2">

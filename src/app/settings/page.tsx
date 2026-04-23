@@ -15,10 +15,10 @@ export default function SettingsPage() {
 
       <main className="mx-auto max-w-3xl p-6 pb-16">
         <h1 className="text-xl font-semibold text-zinc-100">Settings</h1>
-        <p className="mt-2 text-sm text-zinc-500">
-          Paste your Groq API key and tune prompts. Models are fixed for the
-          assignment: Whisper Large V3 (transcription) and GPT-OSS 120B
-          (suggestions and chat).
+        <p className="mt-2 text-sm leading-relaxed text-zinc-500">
+          Connect your own Groq API key to run transcription, live suggestions,
+          and chat. You can optionally adjust the prompt templates and context
+          limits below.
         </p>
 
         <div className="mt-8">

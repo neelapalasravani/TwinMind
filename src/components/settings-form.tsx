@@ -51,10 +51,10 @@ export function SettingsForm() {
 
   return (
     <div className="space-y-8">
-      <p className="text-sm text-zinc-500">
-        Your API key and prompts are stored only in this browser (
-        <span className="font-mono text-zinc-400">localStorage</span>). They
-        are not sent to our servers—only to Groq when you use the app.
+      <p className="text-sm leading-relaxed text-zinc-500">
+        Your API key and prompt settings are saved in this browser only. They are
+        not uploaded to TwinMind or any other backend. Requests go directly from
+        your browser to Groq when you record, refresh suggestions, or use chat.
       </p>
 
       <div className="space-y-6 rounded-lg border border-zinc-800 bg-zinc-950/50 p-6">
@@ -124,10 +124,6 @@ export function SettingsForm() {
           >
             Live suggestions prompt
           </label>
-          <p className="mt-1 text-xs text-zinc-600">
-            Append the recent transcript in your API route before calling the
-            model (this text is the instruction prefix).
-          </p>
           <textarea
             id="live-prompt"
             rows={14}
@@ -144,13 +140,6 @@ export function SettingsForm() {
           >
             Detailed answer (on suggestion click)
           </label>
-          <p className="mt-1 text-xs text-zinc-600">
-            Replace placeholders{" "}
-            <code className="text-zinc-500">{"{{type}}"}</code>,{" "}
-            <code className="text-zinc-500">{"{{title}}"}</code>,{" "}
-            <code className="text-zinc-500">{"{{preview}}"}</code> in code
-            when building the user message.
-          </p>
           <textarea
             id="detail-prompt"
             rows={12}
@@ -167,10 +156,6 @@ export function SettingsForm() {
           >
             Chat prompt (user messages)
           </label>
-          <p className="mt-1 text-xs text-zinc-600">
-            Prepend chat history and the user question after this instruction
-            block.
-          </p>
           <textarea
             id="chat-prompt"
             rows={10}
